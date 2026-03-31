@@ -1,0 +1,19 @@
+[package]
+name = "tems-player"
+version = "0.2.0"
+edition = "2021"
+authors = ["Philippe TEMESI <contact@tems.be>"]
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+cpal = "0.15"
+opus = "0.3"
+ogg = "0.9"
+anyhow = "1.0"
+console = "0.15"
+indicatif = "0.17"
+symphonia = { version = "0.5", features = ["all"] }
+walkdir = "2"
+rand = "0.8"
+
