@@ -1,3 +1,4 @@
+// src/main.rs
 use anyhow::{Context, Result};
 use clap::Parser;
 use console::{style, Emoji, Term};
@@ -25,7 +26,6 @@ use symphonia::core::probe::Hint;
 use ogg::PacketReader;
 use opus::Decoder as OpusDecoder;
 
-// --- Constantes ---
 static MUSIC: Emoji = Emoji("🎵 ", "");
 static CHECK: Emoji = Emoji("✅ ", "");
 static CROSS: Emoji = Emoji("❌ ", "");
@@ -45,7 +45,7 @@ static REPEAT_ONE: Emoji = Emoji("🔂 ", "");
 #[command(name = "tems-player")]
 #[command(author = "Philippe TEMESI")]
 #[command(version = "0.2.0")]
-#[command(about = "CLI Audio Player - Support MP3, FLAC, AAC, Opus, WAV", long_about = None)]
+#[command(about = "CLI Audio Player", long_about = None)]
 struct Args {
     files: Vec<String>,
     #[arg(short, long)]
@@ -72,17 +72,48 @@ enum RepeatMode {
 }
 
 fn cleanup_terminal() {
-    print!("\x1b[?25h"); // Curseur visible
-    print!("\x1b[0m");   // Reset couleurs
-    print!("\r\n");      // Nouvelle ligne
+    print!("\x1b[?25h");
+    print!("\x1b[0m");
+    print!("\r\n");
     let _ = io::stdout().flush();
+    let _ = std::process::Command::new("stty").args(["sane"]).status();
+    let _ = std::process::Command::new("stty").args(["echo"]).status();
+}
+
+fn resample(samples: &[f32], from_rate: u32, to_rate: u32, _channels: u16) -> Vec<f32> {
+    if from_rate == to_rate {
+        return samples.to_vec();
+    }
     
-    let _ = std::process::Command::new("stty")
-        .args(["sane"])
-        .status();
-    let _ = std::process::Command::new("stty")
-        .args(["echo"])
-        .status();
+    let ratio = from_rate as f64 / to_rate as f64;
+    let new_len = (samples.len() as f64 / ratio) as usize;
+    let mut resampled = Vec::with_capacity(new_len);
+    
+    for i in 0..new_len {
+        let src_pos = i as f64 * ratio;
+        let src_idx = src_pos.floor() as usize;
+        let frac = src_pos - src_idx as f64;
+        
+        if src_idx + 1 < samples.len() {
+            let sample = samples[src_idx] * (1.0 - frac) as f32 + samples[src_idx + 1] * frac as f32;
+            resampled.push(sample);
+        } else if src_idx < samples.len() {
+            resampled.push(samples[src_idx]);
+        } else {
+            break;
+        }
+    }
+    
+    resampled
+}
+
+fn convert_to_stereo(samples: &[f32]) -> Vec<f32> {
+    let mut stereo = Vec::with_capacity(samples.len() * 2);
+    for &sample in samples {
+        stereo.push(sample);
+        stereo.push(sample);
+    }
+    stereo
 }
 
 fn build_playlist(args: &Args) -> Result<Vec<PathBuf>> {
@@ -271,9 +302,9 @@ fn show_help() {
     println!("  {} + / =   : Increase volume", style("•").green());
     println!("  {} -       : Decrease volume", style("•").green());
     println!("  {} i       : Show current file info", style("•").green());
-    println!("  {} l       : Show playlist", style("•").green());
+    println!("  {} l       : Show playlist (up to 500 files)", style("•").green());
     println!("  {} g <num> : Go to track number", style("•").green());
-    println!("  {} / <text> : Search in playlist", style("•").green());
+    println!("  {} / <text> : Search in playlist (up to 200 results)", style("•").green());
     println!("  {} s       : Toggle shuffle mode", style("•").green());
     println!("  {} r       : Toggle repeat mode", style("•").green());
     println!("  {} h       : Show this help", style("•").green());
@@ -283,10 +314,10 @@ fn show_help() {
 
 fn show_playlist(playlist: &[PathBuf], current_index: usize, term_width: usize) {
     println!("{}", style("\n╔═══════════════════════════════════════════╗").cyan());
-    println!("{}", style("║              Playlist                     ║").cyan());
+    println!("{}", style("║              Playlist (500 max)            ║").cyan());
     println!("{}", style("╚═══════════════════════════════════════════╝").cyan());
-    let start = if current_index > 10 { current_index - 10 } else { 0 };
-    let end = (start + 20).min(playlist.len());
+    let start = if current_index > 250 { current_index - 250 } else { 0 };
+    let end = (start + 500).min(playlist.len());
     for i in start..end {
         let marker = if i == current_index { "▶" } else { " " };
         let num = format!("{:3}", i + 1);
@@ -300,15 +331,15 @@ fn show_playlist(playlist: &[PathBuf], current_index: usize, term_width: usize) 
     println!("");
 }
 
-fn show_search_results(results: &[(usize, String)], term_width: usize) {
+fn show_search_results(results: &[(usize, String)], _term_width: usize) {
     println!("{}", style("\n╔═══════════════════════════════════════════╗").cyan());
-    println!("{}", style("║           Search Results                  ║").cyan());
+    println!("{}", style("║           Search Results (200 max)         ║").cyan());
     println!("{}", style("╚═══════════════════════════════════════════╝").cyan());
-    for (idx, name) in results.iter().take(50) {
+    for (idx, name) in results.iter().take(200) {
         let num = format!("{:3}", idx + 1);
         println!("  {}. {}", style(num).dim(), style(name).white());
     }
-    if results.len() > 50 { println!("  ... and {} more results", results.len() - 50); }
+    if results.len() > 200 { println!("  ... and {} more results", results.len() - 200); }
     println!("");
 }
 
@@ -354,7 +385,7 @@ fn search_playlist(playlist: &[PathBuf], query: &str) -> Vec<(usize, String)> {
 
 fn get_random_index(current: usize, playlist_len: usize) -> usize {
     let mut rng = thread_rng();
-    let mut candidates: Vec<usize> = (0..playlist_len).filter(|&i| i != current).collect();
+    let candidates: Vec<usize> = (0..playlist_len).filter(|&i| i != current).collect();
     if candidates.is_empty() { current } else { *candidates.choose(&mut rng).unwrap() }
 }
 
@@ -393,13 +424,134 @@ fn read_search(rx: &mpsc::Receiver<console::Key>) -> Option<String> {
     print!("\r\x1b[2K"); io::stdout().flush().ok(); None
 }
 
+fn play_audio(samples: Arc<Vec<f32>>, sample_rate: u32, channels: u16, volume: Arc<Mutex<f32>>, stop_flag: Arc<AtomicBool>, pos: Arc<AtomicUsize>, paused: Arc<AtomicBool>) -> Result<()> {
+    let host = cpal::default_host();
+    let device = match host.default_output_device() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    
+    let target_rate = sample_rate;
+    let mut config = None;
+    
+    if let Ok(configs) = device.supported_output_configs() {
+        for c in configs {
+            if c.channels() == channels {
+                let min_rate = c.min_sample_rate().0;
+                let max_rate = c.max_sample_rate().0;
+                if target_rate >= min_rate && target_rate <= max_rate {
+                    config = Some(cpal::StreamConfig {
+                        channels,
+                        sample_rate: cpal::SampleRate(target_rate),
+                        buffer_size: cpal::BufferSize::Default,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    
+    let config = match config {
+        Some(c) => c,
+        None => {
+            eprintln!("{} Using default 44100 Hz for this track", ERROR);
+            cpal::StreamConfig {
+                channels,
+                sample_rate: cpal::SampleRate(44100),
+                buffer_size: cpal::BufferSize::Default,
+            }
+        }
+    };
+    
+    let mut processed = samples.as_ref().to_vec();
+    
+    if channels == 1 && config.channels == 2 {
+        processed = convert_to_stereo(&processed);
+    }
+    
+    if sample_rate != config.sample_rate.0 {
+        processed = resample(&processed, sample_rate, config.sample_rate.0, config.channels);
+    }
+    
+    let samples_arc = Arc::new(processed);
+    let playing = Arc::new(AtomicBool::new(true));
+    let playing_clone = playing.clone();
+    let pos_clone = pos.clone();
+    let samples_clone = samples_arc.clone();
+    let stop = stop_flag.clone();
+    let vol_ref = volume.clone();
+    let paused_clone = paused.clone();
+    
+    let stream = match device.build_output_stream(
+        &config,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            if !playing_clone.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
+                data.fill(0.0);
+                return;
+            }
+            
+            let current_pos = pos_clone.load(Ordering::Relaxed);
+            let samples_len = samples_clone.len();
+            
+            if current_pos >= samples_len {
+                data.fill(0.0);
+                playing_clone.store(false, Ordering::Relaxed);
+                return;
+            }
+            
+            let vol = *vol_ref.lock().unwrap();
+            let is_paused = paused_clone.load(Ordering::Relaxed);
+            
+            let mut i = 0;
+            let to_write = data.len().min(samples_len - current_pos);
+            while i < to_write {
+                data[i] = samples_clone[current_pos + i] * vol;
+                i += 1;
+            }
+            if i < data.len() {
+                data[i..].fill(0.0);
+            }
+            
+            if !is_paused {
+                pos_clone.store(current_pos + i, Ordering::Relaxed);
+            }
+        },
+        |err| eprintln!("{} Stream error: {}", ERROR, err),
+        None,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} Failed to create audio stream: {} - skipping track", ERROR, e);
+            return Ok(());
+        }
+    };
+    
+    if let Err(e) = stream.play() {
+        eprintln!("{} Failed to start stream: {} - skipping track", ERROR, e);
+        return Ok(());
+    }
+    
+    while pos.load(Ordering::Relaxed) < samples_arc.len() && !stop_flag.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
+    }
+    
+    playing.store(false, Ordering::Relaxed);
+    thread::sleep(Duration::from_millis(100));
+    
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let term = Term::stdout();
     let term_width = term.size().1 as usize;
 
-    let mut playlist = build_playlist(&args)?;
-    if playlist.is_empty() { cleanup_terminal(); println!("{} No audio files found!", ERROR); return Ok(()); }
+    let playlist = build_playlist(&args)?;
+    if playlist.is_empty() { 
+        cleanup_terminal();
+        println!("{} No audio files found!", ERROR); 
+        return Ok(()); 
+    }
 
     term.clear_screen()?;
     println!("{}", style("╔═══════════════════════════════════════════╗").cyan());
@@ -415,15 +567,16 @@ fn main() -> Result<()> {
     let global_stop = Arc::new(AtomicBool::new(false));
     let mut shuffle_mode = false;
     let mut repeat_mode = RepeatMode::Off;
+    let paused = Arc::new(AtomicBool::new(false));
 
     let (tx, rx) = mpsc::channel();
     let t_in = term.clone();
     let gs_in = global_stop.clone();
     
-    let input_handle = thread::spawn(move || {
+    let _input_handle = thread::spawn(move || {
         while !gs_in.load(Ordering::Relaxed) {
             if let Ok(key) = t_in.read_key() {
-                if tx.send(key).is_err() { break; }
+                let _ = tx.send(key);
             }
         }
     });
@@ -445,8 +598,20 @@ fn main() -> Result<()> {
         println!("{} Playing: {} ({}/{}) {}", MUSIC, file.file_name().unwrap().to_string_lossy(), 
                  current_index + 1, playlist.len(), mode_indicator);
 
-        let (samples, sample_rate, channels) = if file.extension().map_or(false, |e| e == "opus") { 
-            load_opus_file(file)? } else { load_audio_file(file)? };
+        let load_result = if file.extension().map_or(false, |e| e == "opus") { 
+            load_opus_file(file)
+        } else { 
+            load_audio_file(file)
+        };
+        
+        let (samples, sample_rate, channels) = match load_result {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("{} Error loading {}: {} - skipping", ERROR, file.file_name().unwrap().to_string_lossy(), e);
+                current_index += 1;
+                continue;
+            }
+        };
 
         let samples_len = samples.len();
         let total_secs = samples_len as f64 / (channels as f64 * sample_rate as f64);
@@ -458,44 +623,17 @@ fn main() -> Result<()> {
             .progress_chars("=> "));
 
         let pos = Arc::new(AtomicUsize::new(0));
-        let paused = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let samples_arc = Arc::new(samples);
 
-        let s_a = samples_arc.clone();
-        let p_a = pos.clone();
-        let pa_a = paused.clone();
-        let v_a = volume.clone();
-        let st_a = stop.clone();
-
+        let samples_for_audio = samples_arc.clone();
+        let pos_for_audio = pos.clone();
+        let stop_for_audio = stop.clone();
+        let volume_for_audio = volume.clone();
+        let paused_for_audio = paused.clone();
+        
         let play_handle = thread::spawn(move || {
-            let host = cpal::default_host();
-            let device = match host.default_output_device() { Some(d) => d, None => return };
-            let config = cpal::StreamConfig { channels, sample_rate: cpal::SampleRate(sample_rate), buffer_size: cpal::BufferSize::Default };
-            let p_cb = p_a.clone(); let s_cb = s_a.clone(); let pa_cb = pa_a.clone();
-            let v_cb = v_a.clone(); let st_cb = st_a.clone();
-
-            let stream = device.build_output_stream(&config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    if st_cb.load(Ordering::Relaxed) { data.fill(0.0); return; }
-                    let curr = p_cb.load(Ordering::Relaxed);
-                    let len = s_cb.len();
-                    if curr >= len { data.fill(0.0); return; }
-                    let vol = *v_cb.lock().unwrap();
-                    let is_paused = pa_cb.load(Ordering::Relaxed);
-                    let mut i = 0;
-                    let to_write = data.len().min(len - curr);
-                    while i < to_write { data[i] = s_cb[curr + i] * vol; i += 1; }
-                    if i < data.len() { data[i..].fill(0.0); }
-                    if !is_paused { p_cb.fetch_add(i, Ordering::Relaxed); }
-                },
-                |err| eprintln!("{} Stream error: {}", ERROR, err), None).unwrap();
-            stream.play().unwrap();
-            while !st_a.load(Ordering::Relaxed) {
-                if p_a.load(Ordering::Relaxed) >= samples_len { break; }
-                thread::sleep(Duration::from_millis(20));
-            }
-            stream.pause().ok();
+            let _ = play_audio(samples_for_audio, sample_rate, channels, volume_for_audio, stop_for_audio, pos_for_audio, paused_for_audio);
         });
 
         let mut track_done = false;
@@ -518,7 +656,11 @@ fn main() -> Result<()> {
                         was_stopped = true; 
                         track_done = true; 
                     }
-                    console::Key::Char(' ') => { paused.store(!paused.load(Ordering::Relaxed), Ordering::Relaxed); }
+                    console::Key::Char(' ') => { 
+                        paused.store(!paused.load(Ordering::Relaxed), Ordering::Relaxed);
+                        let status = if paused.load(Ordering::Relaxed) { "PAUSED" } else { "PLAYING" };
+                        println!("{} {}", style("→").dim(), status);
+                    }
                     console::Key::Char('n') | console::Key::ArrowDown => { stop.store(true, Ordering::Relaxed); skip_to_next = true; track_done = true; }
                     console::Key::Char('p') | console::Key::ArrowUp => { 
                         if current_index > 0 {

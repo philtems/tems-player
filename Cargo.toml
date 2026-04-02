@@ -7,7 +7,6 @@ license = "MIT"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
-cpal = "0.15"
 opus = "0.3"
 ogg = "0.9"
 anyhow = "1.0"
@@ -16,4 +15,13 @@ indicatif = "0.17"
 symphonia = { version = "0.5", features = ["all"] }
 walkdir = "2"
 rand = "0.8"
+cpal = "0.15"
 
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+split-debuginfo = "packed"
+strip = true
+incremental = true
