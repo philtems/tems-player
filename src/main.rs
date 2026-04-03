@@ -482,6 +482,10 @@ fn play_audio(samples: Arc<Vec<f32>>, sample_rate: u32, channels: u16, volume: A
     let vol_ref = volume.clone();
     let paused_clone = paused.clone();
     
+    // Variable pour suivre l'état de la pause
+    let last_paused = Arc::new(AtomicBool::new(false));
+    let last_paused_clone = last_paused.clone();
+    
     let stream = match device.build_output_stream(
         &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -501,7 +505,27 @@ fn play_audio(samples: Arc<Vec<f32>>, sample_rate: u32, channels: u16, volume: A
             
             let vol = *vol_ref.lock().unwrap();
             let is_paused = paused_clone.load(Ordering::Relaxed);
+            let was_paused = last_paused_clone.load(Ordering::Relaxed);
             
+            // Si on vient de sortir de pause, ne pas écrire de silence
+            if is_paused {
+                // En pause, écrire du silence
+                data.fill(0.0);
+                // Mettre à jour le flag
+                if !was_paused {
+                    last_paused_clone.store(true, Ordering::Relaxed);
+                }
+                return;
+            }
+            
+            // Si on vient de reprendre après une pause, ne pas avancer la position immédiatement
+            if was_paused {
+                last_paused_clone.store(false, Ordering::Relaxed);
+                data.fill(0.0);
+                return;
+            }
+            
+            // Lecture normale
             let mut i = 0;
             let to_write = data.len().min(samples_len - current_pos);
             while i < to_write {
@@ -512,9 +536,7 @@ fn play_audio(samples: Arc<Vec<f32>>, sample_rate: u32, channels: u16, volume: A
                 data[i..].fill(0.0);
             }
             
-            if !is_paused {
-                pos_clone.store(current_pos + i, Ordering::Relaxed);
-            }
+            pos_clone.store(current_pos + i, Ordering::Relaxed);
         },
         |err| eprintln!("{} Stream error: {}", ERROR, err),
         None,
